@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Fuel Efficiency &amp; Horsepower — A Narrative Visualization</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+<style>
+  :root{
+    --ink:#1f2933; --muted:#6b7280; --line:#e4e7eb; --accent:#2f6f9f;
+    --usa:#4e79a7; --europe:#e15759; --japan:#59a14f;
+  }
+  *{box-sizing:border-box}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    color:var(--ink); margin:0; background:#fafbfc;
+  }
+  #app{max-width:880px; margin:32px auto; padding:0 20px}
+  header h1{font-size:22px; margin:0 0 6px}
+  header p{color:var(--muted); margin:0 0 18px; line-height:1.5; min-height:44px}
+  #chart{background:#fff; border:1px solid var(--line); border-radius:10px; padding:8px}
+  .axis text{fill:var(--muted); font-size:11px}
+  .axis line, .axis path{stroke:#d7dbe0}
+  .axis-label{fill:var(--ink); font-size:12px; font-weight:600}
+  circle.pt{cursor:pointer}
+  /* --- annotation template (consistent across scenes) --- */
+  .annotation line{stroke:var(--ink); stroke-width:1.2}
+  .annotation circle.marker{fill:none; stroke:var(--ink); stroke-width:1.5}
+  .annotation .box{
+    background:rgba(255,255,255,.94); border:1px solid var(--ink);
+    border-radius:6px; padding:7px 9px; font-size:11.5px; line-height:1.35; width:172px;
+  }
+  .annotation .box b{display:block; margin-bottom:2px; font-size:12px}
+  /* --- controls --- */
+  #controls{display:flex; align-items:center; gap:14px; margin:16px 0}
+  button.nav{
+    border:1px solid var(--line); background:#fff; color:var(--ink);
+    padding:8px 16px; border-radius:8px; font-size:14px; cursor:pointer;
+  }
+  button.nav:hover:not(:disabled){border-color:var(--accent); color:var(--accent)}
+  button.nav:disabled{opacity:.4; cursor:default}
+  #progress{color:var(--muted); font-size:13px}
+  #legend{display:flex; gap:16px; flex-wrap:wrap; min-height:24px; margin-bottom:6px}
+  .swatch{display:flex; align-items:center; gap:6px; font-size:13px; cursor:pointer; user-select:none}
+  .swatch .dot{width:12px; height:12px; border-radius:50%}
+  .swatch.dim{opacity:.35}
+  .hint{color:var(--muted); font-size:12px; margin:4px 0 0}
+  #tooltip{
+    position:absolute; pointer-events:none; opacity:0; transition:opacity .12s;
+    background:#1f2933; color:#fff; padding:8px 10px; border-radius:6px;
+    font-size:12px; line-height:1.4; max-width:220px; z-index:10;
+  }
+  #tooltip b{color:#8ec7ee}
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1 id="scene-title"></h1>
+    <p id="scene-desc"></p>
+  </header>
+
+  <div id="legend"></div>
+  <div id="chart"></div>
+
+  <div id="controls">
+    <button id="prevBtn" class="nav">‹ Back</button>
+    <span id="progress"></span>
+    <button id="nextBtn" class="nav">Next ›</button>
+  </div>
+  <p class="hint">Free-form interaction: hover any point for the model’s details. In the “By origin” scene you can also click a legend label to isolate one region.</p>
+</div>
+<div id="tooltip"></div>
+
+<script>
+/* =========================================================================
+   ILLUSTRATIVE SAMPLE DATA — a subset in the shape of the classic Auto-MPG
+   ("cars") dataset. Values are representative, not verified per-row. For your
+   submission, replace this array with the real dataset loaded from your repo:
+       d3.csv("cars.csv").then(data => { ...coerce numbers... start(data) })
+   ========================================================================= */
+const cars = [
+  {name:"chevrolet chevelle malibu",mpg:18,horsepower:130,weight:3504,cylinders:8,origin:"USA",year:70},
+  {name:"buick skylark 320",mpg:15,horsepower:165,weight:3693,cylinders:8,origin:"USA",year:70},
+  {name:"plymouth satellite",mpg:18,horsepower:150,weight:3436,cylinders:8,origin:"USA",year:70},
+  {name:"ford torino",mpg:17,horsepower:140,weight:3449,cylinders:8,origin:"USA",year:70},
+  {name:"ford galaxie 500",mpg:15,horsepower:198,weight:4341,cylinders:8,origin:"USA",year:70},
+  {name:"chevrolet impala",mpg:14,horsepower:220,weight:4354,cylinders:8,origin:"USA",year:70},
+  {name:"pontiac catalina",mpg:14,horsepower:215,weight:4312,cylinders:8,origin:"USA",year:70},
+  {name:"amc gremlin",mpg:21,horsepower:90,weight:2648,cylinders:6,origin:"USA",year:70},
+  {name:"chevrolet vega",mpg:25,horsepower:72,weight:2408,cylinders:4,origin:"USA",year:71},
+  {name:"ford pinto",mpg:25,horsepower:54,weight:2254,cylinders:4,origin:"USA",year:72},
+  {name:"chevrolet chevette",mpg:29,horsepower:63,weight:2050,cylinders:4,origin:"USA",year:78},
+  {name:"ford fairmont",mpg:26,horsepower:88,weight:2890,cylinders:4,origin:"USA",year:78},
+  {name:"buick century",mpg:20,horsepower:105,weight:3380,cylinders:6,origin:"USA",year:79},
+  {name:"chevrolet citation",mpg:28,horsepower:90,weight:2678,cylinders:4,origin:"USA",year:79},
+  {name:"dodge aries",mpg:25,horsepower:84,weight:2490,cylinders:4,origin:"USA",year:81},
+  {name:"ford escort",mpg:30,horsepower:65,weight:2110,cylinders:4,origin:"USA",year:81},
+  {name:"chevrolet cavalier",mpg:28,horsepower:88,weight:2605,cylinders:4,origin:"USA",year:82},
+  {name:"ford mustang gl",mpg:27,horsepower:86,weight:2790,cylinders:4,origin:"USA",year:82},
+
+  {name:"volkswagen 1131 deluxe",mpg:26,horsepower:46,weight:1835,cylinders:4,origin:"Europe",year:70},
+  {name:"peugeot 504",mpg:25,horsepower:87,weight:2672,cylinders:4,origin:"Europe",year:70},
+  {name:"audi 100 ls",mpg:24,horsepower:90,weight:2430,cylinders:4,origin:"Europe",year:70},
+  {name:"bmw 2002",mpg:26,horsepower:113,weight:2234,cylinders:4,origin:"Europe",year:70},
+  {name:"saab 99e",mpg:25,horsepower:95,weight:2375,cylinders:4,origin:"Europe",year:71},
+  {name:"volvo 145e",mpg:18,horsepower:112,weight:2933,cylinders:4,origin:"Europe",year:73},
+  {name:"volkswagen rabbit",mpg:29,horsepower:70,weight:1937,cylinders:4,origin:"Europe",year:75},
+  {name:"volkswagen dasher",mpg:30,horsepower:74,weight:2190,cylinders:4,origin:"Europe",year:76},
+  {name:"audi 5000",mpg:20,horsepower:103,weight:2830,cylinders:5,origin:"Europe",year:79},
+  {name:"peugeot 505s",mpg:28,horsepower:80,weight:3230,cylinders:4,origin:"Europe",year:79},
+  {name:"volkswagen jetta",mpg:33,horsepower:74,weight:2190,cylinders:4,origin:"Europe",year:81},
+  {name:"volkswagen rabbit l",mpg:36,horsepower:52,weight:1985,cylinders:4,origin:"Europe",year:82},
+
+  {name:"toyota corona mark ii",mpg:24,horsepower:95,weight:2372,cylinders:4,origin:"Japan",year:70},
+  {name:"datsun pl510",mpg:27,horsepower:88,weight:2130,cylinders:4,origin:"Japan",year:70},
+  {name:"toyota corolla",mpg:31,horsepower:65,weight:1773,cylinders:4,origin:"Japan",year:71},
+  {name:"datsun 1200",mpg:35,horsepower:69,weight:1613,cylinders:4,origin:"Japan",year:71},
+  {name:"honda civic",mpg:33,horsepower:53,weight:1795,cylinders:4,origin:"Japan",year:75},
+  {name:"datsun b210",mpg:32,horsepower:67,weight:1985,cylinders:4,origin:"Japan",year:76},
+  {name:"honda accord",mpg:31,horsepower:68,weight:2045,cylinders:4,origin:"Japan",year:78},
+  {name:"toyota corolla tercel",mpg:34,horsepower:75,weight:2065,cylinders:4,origin:"Japan",year:80},
+  {name:"datsun 210",mpg:40,horsepower:65,weight:2110,cylinders:4,origin:"Japan",year:80},
+  {name:"honda civic 1500",mpg:44,horsepower:67,weight:1850,cylinders:4,origin:"Japan",year:80},
+  {name:"toyota starlet",mpg:39,horsepower:58,weight:1755,cylinders:4,origin:"Japan",year:81},
+  {name:"honda civic",mpg:38,horsepower:67,weight:1965,cylinders:4,origin:"Japan",year:82},
+  {name:"datsun 310 gx",mpg:38,horsepower:67,weight:1995,cylinders:4,origin:"Japan",year:82},
+  {name:"toyota corolla",mpg:34,horsepower:88,weight:2395,cylinders:4,origin:"Japan",year:82},
+];
+
+/* =========================================================================
+   PARAMETERS — the state variables that drive scene construction.
+   Every trigger below does exactly one thing: mutate `state`, then re-render.
+   ========================================================================= */
+const state = {
+  scene: 0,              // which scene is showing (0,1,2)
+  highlightOrigin: null, // free-form filter used only in the "origin" scene
+};
+
+/* ---- fixed geometry & scales: defined ONCE so every scene shares the same
+   coordinate system. This is the "template" that gives visual consistency. ---- */
+const W = 820, H = 460, M = {top:24, right:24, bottom:52, left:60};
+const iw = W - M.left - M.right, ih = H - M.top - M.bottom;
+
+const x = d3.scaleLinear().domain([40, 235]).range([0, iw]);
+const y = d3.scaleLinear().domain([10, 48]).range([ih, 0]);
+const color = d3.scaleOrdinal()
+  .domain(["USA","Europe","Japan"])
+  .range(["var(--usa)","var(--europe)","var(--japan)"]);
+const yearColor = d3.scaleSequential(d3.interpolateViridis).domain([70, 82]);
+
+/* =========================================================================
+   SCENE DEFINITIONS — an ordered list. Each scene reuses the same chart but
+   changes emphasis + annotations. `annotations` are stored in DATA space and
+   converted to pixels by the shared annotation template.
+   ========================================================================= */
+const scenes = [
+  {
+    title: "1 · The core trade-off",
+    desc: "Each dot is a car model. Reading left-to-right (horsepower) against bottom-to-top (fuel economy), a clear inverse relationship emerges: more power generally costs miles per gallon.",
+    mode: "overview",
+    annotations: [
+      {hp:215, mpg:14, dx:-150, dy:-30, title:"Full-size V8s",
+       text:"High horsepower sits at the bottom — the least efficient corner."},
+      {hp:65, mpg:40, dx:30, dy:20, title:"Light four-cylinders",
+       text:"Modest power, but the best miles per gallon."},
+    ],
+  },
+  {
+    title: "2 · Where the efficient cars come from",
+    desc: "Coloring the same points by region of origin shows the trade-off wasn’t evenly distributed. Japanese and European compacts concentrate in the high-efficiency zone; American models spread toward high power.",
+    mode: "origin",
+    annotations: [
+      {hp:64, mpg:38, dx:26, dy:-8, title:"Japanese imports",
+       text:"Cluster tightly in the high-MPG, low-power corner."},
+    ],
+  },
+  {
+    title: "3 · Efficiency climbs over the decade",
+    desc: "Coloring by model year (dark = 1970, bright = 1982) reveals the trend over time: the frontier of high fuel economy is dominated by newer models as the decade progresses.",
+    mode: "year",
+    annotations: [
+      {hp:66, mpg:44, dx:20, dy:24, title:"Early 1980s",
+       text:"The brightest points push MPG to new highs across every power level."},
+    ],
+  },
+];
+
+/* ---- build the static frame once ---- */
+const svg = d3.select("#chart").append("svg")
+  .attr("viewBox", `0 0 ${W} ${H}`)
+  .attr("width", "100%");
+const root = svg.append("g").attr("transform", `translate(${M.left},${M.top})`);
+
+root.append("g").attr("class","axis")
+  .attr("transform", `translate(0,${ih})`).call(d3.axisBottom(x).ticks(8));
+root.append("g").attr("class","axis").call(d3.axisLeft(y).ticks(7));
+root.append("text").attr("class","axis-label")
+  .attr("x", iw/2).attr("y", ih+42).attr("text-anchor","middle").text("Horsepower");
+root.append("text").attr("class","axis-label")
+  .attr("transform","rotate(-90)").attr("x",-ih/2).attr("y",-44)
+  .attr("text-anchor","middle").text("Miles per gallon");
+
+const pointsG = root.append("g");
+const annG = root.append("g");
+const tooltip = d3.select("#tooltip");
+
+/* ---- draw points once; scenes only re-style them via transitions ---- */
+pointsG.selectAll("circle").data(cars).enter().append("circle")
+  .attr("class","pt")
+  .attr("cx", d => x(d.horsepower))
+  .attr("cy", d => y(d.mpg))
+  .attr("r", 5.5)
+  .attr("stroke", "#fff").attr("stroke-width", 1)
+  .on("mousemove", (event, d) => {
+    tooltip.style("opacity", 1)
+      .style("left", (event.pageX + 14) + "px")
+      .style("top",  (event.pageY - 10) + "px")
+      .html(`<b>${d.name}</b><br>${d.mpg} mpg · ${d.horsepower} hp<br>${d.origin}, ’${d.year} · ${d.cylinders} cyl`);
+  })
+  .on("mouseout", () => tooltip.style("opacity", 0));
+
+/* =========================================================================
+   ANNOTATION TEMPLATE — one function, identical styling every time it is used.
+   Annotations render as part of the scene (no mouseover required).
+   ========================================================================= */
+function addAnnotation(a){
+  const px = x(a.hp), py = y(a.mpg);
+  const g = annG.append("g").attr("class","annotation");
+  g.append("line").attr("x1",px).attr("y1",py).attr("x2",px+a.dx).attr("y2",py+a.dy);
+  g.append("circle").attr("class","marker").attr("cx",px).attr("cy",py).attr("r",6);
+  const boxX = a.dx < 0 ? px + a.dx - 172 : px + a.dx;
+  const fo = g.append("foreignObject")
+    .attr("x", boxX).attr("y", py + a.dy - 12).attr("width", 174).attr("height", 120);
+  fo.append("xhtml:div").attr("class","box").html(`<b>${a.title}</b>${a.text}`);
+}
+
+/* ---- per-scene styling helpers ---- */
+function fillFor(d, mode){
+  if(mode === "origin") return color(d.origin);
+  if(mode === "year")   return yearColor(d.year);
+  return "var(--accent)";
+}
+function opacityFor(d, mode){
+  if(mode === "origin" && state.highlightOrigin && d.origin !== state.highlightOrigin) return 0.1;
+  return 0.85;
+}
+
+/* =========================================================================
+   RENDER — the single function that reads PARAMETERS and builds a scene.
+   ========================================================================= */
+function render(){
+  const s = scenes[state.scene];
+
+  d3.select("#scene-title").text(s.title);
+  d3.select("#scene-desc").text(s.desc);
+  d3.select("#progress").text(`Scene ${state.scene+1} of ${scenes.length}`);
+  d3.select("#prevBtn").property("disabled", state.scene === 0);
+  d3.select("#nextBtn").property("disabled", state.scene === scenes.length-1);
+
+  pointsG.selectAll("circle").transition().duration(600)
+    .attr("fill", d => fillFor(d, s.mode))
+    .attr("opacity", d => opacityFor(d, s.mode));
+
+  annG.selectAll("*").remove();
+  s.annotations.forEach(addAnnotation);
+
+  drawLegend(s);
+}
+
+function drawLegend(s){
+  const legend = d3.select("#legend").html("");
+  if(s.mode === "origin"){
+    color.domain().forEach(o => {
+      const active = !state.highlightOrigin || state.highlightOrigin === o;
+      const sw = legend.append("div")
+        .attr("class", "swatch" + (active ? "" : " dim"))
+        // TRIGGER: click a legend label to isolate one region
+        .on("click", () => {
+          state.highlightOrigin = (state.highlightOrigin === o) ? null : o;
+          render();
+        });
+      sw.append("span").attr("class","dot").style("background", color(o));
+      sw.append("span").text(o);
+    });
+  } else if(s.mode === "year"){
+    const wrap = legend.append("div").style("display","flex")
+      .style("align-items","center").style("gap","8px").style("font-size","13px");
+    wrap.append("span").text("1970");
+    const bar = wrap.append("span").style("width","140px").style("height","12px")
+      .style("border-radius","6px");
+    bar.style("background", `linear-gradient(to right, ${yearColor(70)}, ${yearColor(76)}, ${yearColor(82)})`);
+    wrap.append("span").text("1982");
+  }
+}
+
+/* =========================================================================
+   TRIGGERS — UI actions wired to parameter changes, then a re-render.
+   ========================================================================= */
+d3.select("#nextBtn").on("click", () => {
+  if(state.scene < scenes.length-1){ state.scene++; state.highlightOrigin=null; render(); }
+});
+d3.select("#prevBtn").on("click", () => {
+  if(state.scene > 0){ state.scene--; state.highlightOrigin=null; render(); }
+});
+
+render(); // initial scene
+</script>
+</body>
+</html>
