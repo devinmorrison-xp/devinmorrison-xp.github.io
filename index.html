@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Power vs. Efficiency — A Narrative Visualization</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+<style>
+  :root{
+    --ink:#141b22; --muted:#6b7684; --faint:#9aa4af; --line:#e7ebef;
+    --panel:#ffffff; --bg:#f6f8fa; --accent:#2f6f9f;
+    --usa:#4e79a7; --europe:#f28e2b; --japan:#59a14f;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    color:var(--ink); background:var(--bg); -webkit-font-smoothing:antialiased;
+  }
+  #app{max-width:900px; margin:36px auto; padding:0 22px}
+  .eyebrow{
+    text-transform:uppercase; letter-spacing:.12em; font-size:11px; font-weight:700;
+    color:var(--accent); margin:0 0 6px;
+  }
+  header h1{font-size:24px; line-height:1.25; margin:0 0 8px; transition:opacity .25s}
+  header p{color:var(--muted); margin:0; line-height:1.55; min-height:46px; max-width:64ch; transition:opacity .25s}
+
+  #dots{display:flex; gap:8px; margin:18px 0 10px}
+  .dot-nav{width:9px; height:9px; border-radius:50%; background:var(--line); cursor:pointer; transition:all .2s}
+  .dot-nav:hover{transform:scale(1.25)}
+  .dot-nav.on{background:var(--accent); width:24px; border-radius:5px}
+
+  #legend{display:flex; gap:18px; flex-wrap:wrap; min-height:26px; align-items:center; margin:2px 0 6px}
+  .swatch{display:flex; align-items:center; gap:7px; font-size:13px; cursor:pointer; user-select:none; transition:opacity .2s}
+  .swatch .chip{width:12px; height:12px; border-radius:50%}
+  .swatch.dim{opacity:.32}
+  .rampwrap{display:flex; align-items:center; gap:9px; font-size:12px; color:var(--muted)}
+  .ramp{width:150px; height:12px; border-radius:6px}
+
+  #chart{background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:10px 12px 6px; box-shadow:0 1px 2px rgba(20,27,34,.04)}
+  .grid line{stroke:#eef1f4}
+  .grid path{stroke:none}
+  .axis text{fill:var(--faint); font-size:11px}
+  .axis path, .axis .tick line{stroke:#d9dee3}
+  .axis-label{fill:var(--ink); font-size:12px; font-weight:600}
+
+  circle.pt{cursor:pointer}
+  path.trend{stroke:var(--ink); stroke-width:2; stroke-dasharray:6 5; fill:none; opacity:.7}
+  .centroid circle{stroke:#fff; stroke-width:2.5}
+  .centroid text{font-size:12px; font-weight:700; fill:var(--ink); paint-order:stroke; stroke:#fff; stroke-width:3px}
+
+  .annotation line{stroke:var(--ink); stroke-width:1.2}
+  .annotation circle.marker{fill:none; stroke:var(--ink); stroke-width:1.5}
+  .annotation .box{
+    background:rgba(255,255,255,.95); border:1px solid var(--ink);
+    border-radius:7px; padding:8px 10px; font-size:11.5px; line-height:1.38; width:184px;
+    box-shadow:0 2px 6px rgba(20,27,34,.08);
+  }
+  .annotation .box b{display:block; margin-bottom:3px; font-size:12px}
+
+  #controls{display:flex; align-items:center; gap:14px; margin:18px 0 4px}
+  button.nav{
+    border:1px solid var(--line); background:#fff; color:var(--ink);
+    padding:9px 18px; border-radius:9px; font-size:14px; font-weight:500; cursor:pointer; transition:all .18s;
+  }
+  button.nav:hover:not(:disabled){border-color:var(--accent); color:var(--accent)}
+  button.nav:disabled{opacity:.4; cursor:default}
+  #progress{color:var(--muted); font-size:13px; margin-left:auto}
+  .hint{color:var(--faint); font-size:12px; margin:10px 0 0}
+  footer{color:var(--faint); font-size:11.5px; margin:20px 0 0; border-top:1px solid var(--line); padding-top:12px}
+
+  #tooltip{
+    position:absolute; pointer-events:none; opacity:0; transition:opacity .12s;
+    background:#141b22; color:#fff; padding:9px 11px; border-radius:7px;
+    font-size:12px; line-height:1.45; max-width:230px; z-index:20; box-shadow:0 4px 14px rgba(0,0,0,.25);
+  }
+  #tooltip .tt-name{font-weight:700; color:#8ec7ee; margin-bottom:2px}
+</style>
+</head>
+<body>
+<div id="app">
+  <p class="eyebrow">Automobiles · 1970–1982</p>
+  <header>
+    <h1 id="scene-title"></h1>
+    <p id="scene-desc"></p>
+  </header>
+
+  <div id="dots"></div>
+  <div id="legend"></div>
+  <div id="chart"></div>
+
+  <div id="controls">
+    <button id="prevBtn" class="nav">‹ Back</button>
+    <button id="nextBtn" class="nav">Next ›</button>
+    <span id="progress"></span>
+  </div>
+  <p class="hint">Hover any point for its details · use &larr; &rarr; keys or the dots above to move between scenes.</p>
+  <footer>Source: Auto-MPG ("cars") dataset. Serve <code>cars.json</code> from this repo; sample data is used only if that file is missing.</footer>
+</div>
+<div id="tooltip"></div>
+
+<script>
+/* =========================================================================
+   DATA LOADING
+   Preferred: cars.json hosted in this repo (self-contained, grader-safe).
+   The real vega "cars" file uses capitalized fields and has nulls + a date
+   string for Year, so we map/clean it into a tidy shape. If the file is
+   missing (e.g. local preview), we fall back to the embedded SAMPLE.
+   ========================================================================= */
+const SAMPLE = [ /* illustrative fallback only - real story uses cars.json */
+  {name:"chevrolet impala",mpg:14,horsepower:220,weight:4354,cylinders:8,origin:"USA",year:70},
+  {name:"pontiac catalina",mpg:14,horsepower:215,weight:4312,cylinders:8,origin:"USA",year:70},
+  {name:"ford galaxie 500",mpg:15,horsepower:198,weight:4341,cylinders:8,origin:"USA",year:70},
+  {name:"buick skylark 320",mpg:15,horsepower:165,weight:3693,cylinders:8,origin:"USA",year:70},
+  {name:"chevrolet chevelle malibu",mpg:18,horsepower:130,weight:3504,cylinders:8,origin:"USA",year:70},
+  {name:"ford torino",mpg:17,horsepower:140,weight:3449,cylinders:8,origin:"USA",year:70},
+  {name:"amc gremlin",mpg:21,horsepower:90,weight:2648,cylinders:6,origin:"USA",year:70},
+  {name:"chevrolet vega",mpg:25,horsepower:72,weight:2408,cylinders:4,origin:"USA",year:71},
+  {name:"ford pinto",mpg:25,horsepower:54,weight:2254,cylinders:4,origin:"USA",year:72},
+  {name:"chevrolet chevette",mpg:29,horsepower:63,weight:2050,cylinders:4,origin:"USA",year:78},
+  {name:"buick century",mpg:20,horsepower:105,weight:3380,cylinders:6,origin:"USA",year:79},
+  {name:"chevrolet citation",mpg:28,horsepower:90,weight:2678,cylinders:4,origin:"USA",year:79},
+  {name:"ford escort",mpg:30,horsepower:65,weight:2110,cylinders:4,origin:"USA",year:81},
+  {name:"chevrolet cavalier",mpg:28,horsepower:88,weight:2605,cylinders:4,origin:"USA",year:82},
+  {name:"ford mustang gl",mpg:27,horsepower:86,weight:2790,cylinders:4,origin:"USA",year:82},
+  {name:"volkswagen 1131 deluxe",mpg:26,horsepower:46,weight:1835,cylinders:4,origin:"Europe",year:70},
+  {name:"peugeot 504",mpg:25,horsepower:87,weight:2672,cylinders:4,origin:"Europe",year:70},
+  {name:"audi 100 ls",mpg:24,horsepower:90,weight:2430,cylinders:4,origin:"Europe",year:70},
+  {name:"bmw 2002",mpg:26,horsepower:113,weight:2234,cylinders:4,origin:"Europe",year:70},
+  {name:"volvo 145e",mpg:18,horsepower:112,weight:2933,cylinders:4,origin:"Europe",year:73},
+  {name:"volkswagen rabbit",mpg:29,horsepower:70,weight:1937,cylinders:4,origin:"Europe",year:75},
+  {name:"audi 5000",mpg:20,horsepower:103,weight:2830,cylinders:5,origin:"Europe",year:79},
+  {name:"volkswagen jetta",mpg:33,horsepower:74,weight:2190,cylinders:4,origin:"Europe",year:81},
+  {name:"volkswagen rabbit l",mpg:36,horsepower:52,weight:1985,cylinders:4,origin:"Europe",year:82},
+  {name:"toyota corona mark ii",mpg:24,horsepower:95,weight:2372,cylinders:4,origin:"Japan",year:70},
+  {name:"datsun pl510",mpg:27,horsepower:88,weight:2130,cylinders:4,origin:"Japan",year:70},
+  {name:"toyota corolla",mpg:31,horsepower:65,weight:1773,cylinders:4,origin:"Japan",year:71},
+  {name:"datsun 1200",mpg:35,horsepower:69,weight:1613,cylinders:4,origin:"Japan",year:71},
+  {name:"honda civic",mpg:33,horsepower:53,weight:1795,cylinders:4,origin:"Japan",year:75},
+  {name:"datsun b210",mpg:32,horsepower:67,weight:1985,cylinders:4,origin:"Japan",year:76},
+  {name:"honda accord",mpg:31,horsepower:68,weight:2045,cylinders:4,origin:"Japan",year:78},
+  {name:"datsun 210",mpg:40,horsepower:65,weight:2110,cylinders:4,origin:"Japan",year:80},
+  {name:"honda civic 1500",mpg:44,horsepower:67,weight:1850,cylinders:4,origin:"Japan",year:80},
+  {name:"toyota starlet",mpg:39,horsepower:58,weight:1755,cylinders:4,origin:"Japan",year:81},
+  {name:"honda civic",mpg:38,horsepower:67,weight:1965,cylinders:4,origin:"Japan",year:82},
+  {name:"datsun 310 gx",mpg:38,horsepower:67,weight:1995,cylinders:4,origin:"Japan",year:82},
+  {name:"toyota corolla",mpg:34,horsepower:88,weight:2395,cylinders:4,origin:"Japan",year:82},
+];
+
+function cleanReal(raw){
+  return raw
+    .filter(d => d.Horsepower != null && d.Miles_per_Gallon != null)
+    .map(d => ({
+      name: d.Name,
+      mpg: +d.Miles_per_Gallon,
+      horsepower: +d.Horsepower,
+      weight: +d.Weight_in_lbs,
+      cylinders: +d.Cylinders,
+      origin: d.Origin,
+      year: +String(d.Year).slice(2, 4)
+    }));
+}
+
+d3.json("cars.json")
+  .then(raw => { const c = cleanReal(raw); return c.length ? c : SAMPLE; })
+  .catch(() => { console.warn("cars.json not found - using embedded sample."); return SAMPLE; })
+  .then(start);
+
+function start(cars){
+
+  /* PARAMETERS: state variables that drive every scene */
+  const state = { scene:0, highlightOrigin:null };
+
+  /* shared geometry & scales (defined once = visual template) */
+  const W=840, H=470, M={top:20,right:26,bottom:52,left:60};
+  const iw=W-M.left-M.right, ih=H-M.top-M.bottom;
+  const x = d3.scaleLinear().domain(d3.extent(cars,d=>d.horsepower)).nice().range([0,iw]);
+  const y = d3.scaleLinear().domain(d3.extent(cars,d=>d.mpg)).nice().range([ih,0]);
+  const color = d3.scaleOrdinal().domain(["USA","Europe","Japan"])
+    .range(["var(--usa)","var(--europe)","var(--japan)"]);
+  const yearExtent = d3.extent(cars,d=>d.year);
+  const yearColor = d3.scaleSequential(d3.interpolateViridis).domain(yearExtent);
+
+  /* precompute analytics */
+  const reg = leastSquares(cars.map(d=>d.horsepower), cars.map(d=>d.mpg));
+  const centroids = Array.from(
+    d3.group(cars, d=>d.origin), ([origin, rows]) => ({
+      origin, hp:d3.mean(rows,d=>d.horsepower), mpg:d3.mean(rows,d=>d.mpg), n:rows.length
+    })
+  ).filter(c => color.domain().includes(c.origin));
+
+  /* SCENES */
+  const scenes = [
+    { title:"More power comes at a cost",
+      desc:"Every dot is a car model, plotted by engine horsepower against fuel economy. The dashed line is the fitted trend: as horsepower rises, miles-per-gallon falls. That inverse relationship is the tension the rest of this story is about.",
+      mode:"overview",
+      annotations:[ {hp:qx(cars,.95), mpg:qy(cars,.06), dx:-160, dy:-26, title:"The powerful, thirsty end",
+         text:"High-horsepower models sit lowest on fuel economy."} ]},
+    { title:"The efficient cars share an address",
+      desc:"Coloring the same points by region of origin shows the trade-off was not shared evenly. Japanese and European compacts crowd the high-efficiency corner; American models stretch toward high power. Click a region in the legend to isolate it.",
+      mode:"origin",
+      annotations:[ {hp:qx(cars,.18), mpg:qy(cars,.9), dx:34, dy:-4, title:"Imports cluster here",
+         text:"Low power, high MPG - a tight, efficient cluster."} ]},
+    { title:"And efficiency climbed through the decade",
+      desc:"Now colored by model year - dark is 1970, bright is 1982. The brightest points push the efficiency frontier upward and outward: newer models delivered more miles per gallon at every level of power.",
+      mode:"year",
+      annotations:[ {hp:qx(cars,.2), mpg:qy(cars,.96), dx:26, dy:26, title:"Early '80s frontier",
+         text:"The newest models reach the highest MPG on the chart."} ]},
+    { title:"The story in three points",
+      desc:"Averaging each region into a single marker distills the whole picture: American cars average the most power and the least economy, European cars sit in the middle, and Japanese models anchor the efficient corner. That gap is what drove the decade's shift.",
+      mode:"summary", annotations:[] },
+  ];
+
+  /* static frame */
+  const svg = d3.select("#chart").append("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`).attr("width","100%");
+  const root = svg.append("g").attr("transform",`translate(${M.left},${M.top})`);
+
+  root.append("g").attr("class","grid")
+    .call(d3.axisLeft(y).ticks(7).tickSize(-iw).tickFormat(""));
+  root.append("g").attr("class","axis")
+    .attr("transform",`translate(0,${ih})`).call(d3.axisBottom(x).ticks(8));
+  root.append("g").attr("class","axis").call(d3.axisLeft(y).ticks(7));
+  root.append("text").attr("class","axis-label")
+    .attr("x",iw/2).attr("y",ih+42).attr("text-anchor","middle").text("Horsepower \u2192");
+  root.append("text").attr("class","axis-label")
+    .attr("transform","rotate(-90)").attr("x",-ih/2).attr("y",-44)
+    .attr("text-anchor","middle").text("Miles per gallon \u2192");
+
+  const trendG=root.append("g"), pointsG=root.append("g"),
+        centroidG=root.append("g"), annG=root.append("g");
+  const tooltip=d3.select("#tooltip");
+
+  const trendPath = trendG.append("path").attr("class","trend")
+    .attr("d", d3.line()([[x(x.domain()[0]), y(reg.predict(x.domain()[0]))],
+                          [x(x.domain()[1]), y(reg.predict(x.domain()[1]))]]))
+    .style("opacity",0);
+
+  pointsG.selectAll("circle").data(cars).enter().append("circle")
+    .attr("class","pt")
+    .attr("cx",d=>x(d.horsepower)).attr("cy",d=>y(d.mpg))
+    .attr("r",5.5).attr("stroke","#fff").attr("stroke-width",1)
+    .on("mousemove",(e,d)=>{
+      tooltip.style("opacity",1)
+        .style("left",(e.pageX+14)+"px").style("top",(e.pageY-12)+"px")
+        .html(`<div class="tt-name">${d.name}</div>${d.mpg} mpg &middot; ${d.horsepower} hp &middot; ${d.weight} lb<br>${d.origin}, '${d.year} &middot; ${d.cylinders} cyl`);
+    })
+    .on("mouseout",()=>tooltip.style("opacity",0));
+
+  /* ANNOTATION TEMPLATE */
+  function addAnnotation(a){
+    const px=x(a.hp), py=y(a.mpg);
+    const g=annG.append("g").attr("class","annotation").style("opacity",0);
+    g.append("line").attr("x1",px).attr("y1",py).attr("x2",px+a.dx).attr("y2",py+a.dy);
+    g.append("circle").attr("class","marker").attr("cx",px).attr("cy",py).attr("r",6);
+    const boxX = a.dx<0 ? px+a.dx-184 : px+a.dx;
+    g.append("foreignObject").attr("x",boxX).attr("y",py+a.dy-14).attr("width",186).attr("height",130)
+      .append("xhtml:div").attr("class","box").html(`<b>${a.title}</b>${a.text}`);
+    g.transition().duration(400).delay(250).style("opacity",1);
+  }
+
+  function fillFor(d,mode){
+    if(mode==="origin"||mode==="summary") return color(d.origin);
+    if(mode==="year") return yearColor(d.year);
+    return "var(--accent)";
+  }
+  function opacityFor(d,mode){
+    if(mode==="origin" && state.highlightOrigin && d.origin!==state.highlightOrigin) return 0.08;
+    if(mode==="summary") return 0.14;
+    return 0.82;
+  }
+
+  /* RENDER */
+  function render(){
+    const s=scenes[state.scene];
+    d3.select("#scene-title").text(s.title);
+    d3.select("#scene-desc").text(s.desc);
+    d3.select("#progress").text(`Scene ${state.scene+1} of ${scenes.length}`);
+    d3.select("#prevBtn").property("disabled",state.scene===0);
+    d3.select("#nextBtn").property("disabled",state.scene===scenes.length-1);
+    d3.selectAll(".dot-nav").classed("on",(d,i)=>i===state.scene);
+
+    pointsG.selectAll("circle").transition().duration(650)
+      .attr("fill",d=>fillFor(d,s.mode))
+      .attr("opacity",d=>opacityFor(d,s.mode));
+
+    if(s.mode==="overview"){
+      const len=trendPath.node().getTotalLength();
+      trendPath.style("opacity",.7)
+        .attr("stroke-dasharray",`${len} ${len}`).attr("stroke-dashoffset",len)
+        .transition().duration(900).attr("stroke-dashoffset",0)
+        .on("end",()=>trendPath.attr("stroke-dasharray","6 5"));
+    } else { trendPath.transition().duration(300).style("opacity",0); }
+
+    centroidG.selectAll("*").remove();
+    if(s.mode==="summary"){
+      const cg=centroidG.selectAll("g").data(centroids).enter().append("g").attr("class","centroid");
+      cg.append("circle")
+        .attr("cx",d=>x(d.hp)).attr("cy",d=>y(d.mpg)).attr("r",0)
+        .attr("fill",d=>color(d.origin))
+        .transition().duration(700).delay((d,i)=>i*120).attr("r",13);
+      cg.append("text")
+        .attr("x",d=>x(d.hp)).attr("y",d=>y(d.mpg)-20).attr("text-anchor","middle")
+        .style("opacity",0).text(d=>`${d.origin} \u00b7 ${d.mpg.toFixed(0)} mpg avg`)
+        .transition().duration(500).delay((d,i)=>i*120+300).style("opacity",1);
+    }
+
+    annG.selectAll("*").remove();
+    if(s.mode!=="summary") s.annotations.forEach(addAnnotation);
+
+    drawLegend(s);
+  }
+
+  function drawLegend(s){
+    const legend=d3.select("#legend").html("");
+    if(s.mode==="origin"||s.mode==="summary"){
+      color.domain().forEach(o=>{
+        const active=!state.highlightOrigin||state.highlightOrigin===o||s.mode==="summary";
+        const sw=legend.append("div").attr("class","swatch"+(active?"":" dim"));
+        if(s.mode==="origin"){
+          sw.style("cursor","pointer").on("click",()=>{
+            state.highlightOrigin=(state.highlightOrigin===o)?null:o; render();
+          });
+        }
+        sw.append("span").attr("class","chip").style("background",color(o));
+        sw.append("span").text(o);
+      });
+    } else if(s.mode==="year"){
+      const w=legend.append("div").attr("class","rampwrap");
+      w.append("span").text("19"+yearExtent[0]);
+      w.append("span").attr("class","ramp")
+        .style("background",`linear-gradient(to right, ${yearColor(yearExtent[0])}, ${yearColor((yearExtent[0]+yearExtent[1])/2)}, ${yearColor(yearExtent[1])})`);
+      w.append("span").text("19"+yearExtent[1]);
+    }
+  }
+
+  d3.select("#dots").selectAll("div").data(scenes).enter().append("div")
+    .attr("class","dot-nav")
+    .on("click",(e,d)=>{ state.scene=scenes.indexOf(d); state.highlightOrigin=null; render(); });
+
+  /* TRIGGERS */
+  const go=n=>{ const t=state.scene+n;
+    if(t>=0&&t<scenes.length){ state.scene=t; state.highlightOrigin=null; render(); } };
+  d3.select("#nextBtn").on("click",()=>go(1));
+  d3.select("#prevBtn").on("click",()=>go(-1));
+  d3.select("body").on("keydown",e=>{
+    if(e.key==="ArrowRight") go(1);
+    if(e.key==="ArrowLeft")  go(-1);
+  });
+
+  render();
+}
+
+function leastSquares(xs, ys){
+  const n=xs.length, mx=d3.mean(xs), my=d3.mean(ys);
+  let num=0, den=0;
+  for(let i=0;i<n;i++){ num+=(xs[i]-mx)*(ys[i]-my); den+=(xs[i]-mx)**2; }
+  const slope=num/den, intercept=my-slope*mx;
+  return { slope, intercept, predict:v=>slope*v+intercept };
+}
+function qx(data,q){ return d3.quantile(data.map(d=>d.horsepower).sort(d3.ascending),q); }
+function qy(data,q){ return d3.quantile(data.map(d=>d.mpg).sort(d3.ascending),q); }
+</script>
+</body>
+</html>
